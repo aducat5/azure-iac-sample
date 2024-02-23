@@ -1,0 +1,53 @@
+trigger: none
+
+pr: none
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  serviceConnectionName: '<service-connection-name>'
+  resourceGroup: 'Shared'
+  defaultLocation: 'westeurope'
+  appName: 'shared'
+
+steps:
+  
+  - task: AzureResourceManagerTemplateDeployment@3
+    displayName: 'Deploy Resources'
+    inputs:
+      deploymentScope: "Resource Group"
+      action: "Create Or Update Resource Group"
+      csmFile: '../biceps/shared.bicep'
+      deploymentMode: "Incremental"
+      connectedServiceName: $(serviceConnectionName)
+      location: $(defaultLocation)
+      resourceGroupName: '$(resourceGroup)'
+      deploymentOutputs: 'armOutputs'
+      overrideParameters: >
+        -defaultLocation $(defaultLocation)
+        -appName $(appName)
+
+  - task: AzurePowerShell@4
+    displayName: Parse Output Variables
+    inputs:
+      azureSubscription: $(serviceConnectionName)
+      scriptType: 'InlineScript'
+      Inline: |
+        $var=ConvertFrom-Json '$(armOutputs)'
+        $value=$var.csName.value
+        Write-Host "##vso[task.setvariable variable=csName;]$value"
+      azurePowerShellVersion: 'latestVersion'
+      pwsh: true
+
+  ##deploy function bicep
+  ##deploy function app
+
+  # - task: AzureCLI@2
+  #   inputs:
+  #     azureSubscription: $(serviceConnectionName)
+  #     scriptType: 'bash'
+  #     scriptLocation: 'inlineScript'
+  #     inlineScript: |
+  #       az appconfig credential list -n $(csName) -g $(resourceGroup)  --query '[].connectionString' -o tsv
+

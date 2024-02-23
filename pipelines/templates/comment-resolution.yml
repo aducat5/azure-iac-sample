@@ -1,0 +1,111 @@
+parameters: 
+
+- name: vmImage
+  type: string
+  default: ubuntu-latest
+
+- name: dependsOn
+  type: object
+
+- name: condition
+  type: object
+
+- name: jobName
+  type: string
+
+- name: comment
+  type: string
+
+- name: displayName
+  type: string
+
+- name: apiBranch
+  type: string
+  default: master
+
+- name: webBranch
+  type: string
+  default: master
+
+jobs:
+- deployment: '${{ parameters.jobName }}'
+  dependsOn: '${{ parameters.dependsOn }}'
+  condition: ${{ parameters.condition }}
+  displayName: '${{ parameters.displayName }}'
+  environment: 'Staging'
+  pool:
+    vmImage: ${{ parameters.vmImage }}     
+  strategy:
+    runOnce:
+      deploy:
+        steps:                   
+          - pwsh: |
+              #trim and save branch names
+              
+              $apiBranch = "${{ parameters.apiBranch }}"
+              $webBranch = "${{ parameters.webBranch }}"
+
+              Write-Host "##vso[task.setvariable variable=apiBranch;]$apiBranch"
+              Write-Host "##vso[task.setvariable variable=webBranch;]$webBranch"
+              
+              $owner = "sample-saas-organization"
+              $apiRepo = "sample-saas-api"
+              $webRepo = "sample-saas-frontend"
+
+              $token = "$(GitHubPAT)" # Replace with your GitHub Personal Access Token
+              
+              $headers = @{
+                "Authorization" = "Bearer $Token"
+                "Accept" = "application/vnd.github.v3+json"
+              }
+
+              if ($apiBranch -ne 'master'){
+                  $response = Invoke-RestMethod -Uri "https://api.github.com/repos/$owner/$apiRepo/pulls" -Headers $headers -Method Get
+                  $pullRequest = $response | Where-Object { $_.head.ref -eq $apiBranch }
+                  
+                  if ($pullRequest) {
+                      Write-Host "ID of the pull request with head branch '$apiBranch': $($pullRequest.number)"
+                      Write-Host "##vso[task.setvariable variable=isApiPrOpen;]$(true)"
+                      Write-Host "##vso[task.setvariable variable=apiPrId;]$($pullRequest.number)"
+                  } else {
+                      Write-Host "No pull request found for head branch '$apiBranch'"
+                      Write-Host "##vso[task.setvariable variable=isApiPrOpen;]$(false)"
+                  }
+              }
+
+              if ($webBranch -ne 'master'){
+                  $response = Invoke-RestMethod -Uri "https://api.github.com/repos/$owner/$webRepo/pulls" -Headers $headers -Method Get
+                  $pullRequest = $response | Where-Object { $_.head.ref -eq $webBranch }
+                  
+                  if ($pullRequest) {
+                      Write-Host "ID of the pull request with head branch '$webBranch': $($pullRequest.number)"
+                      Write-Host "##vso[task.setvariable variable=isWebPrOpen;]$(true)"
+                      Write-Host "##vso[task.setvariable variable=webPrId;]$($pullRequest.number)"
+                  } else {
+                      Write-Host "No pull request found for head branch '$webBranch'"
+                      Write-Host "##vso[task.setvariable variable=isWebPrOpen;]$(false)"
+                  }
+              }
+              
+              $buildUrl = "$(System.TeamFoundationCollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)"
+              Write-Host "##vso[task.setvariable variable=buildUrl;]$buildUrl"
+              
+            displayName: 'Find and save pr ids if there is.'
+
+          - ${{ if and(ne(variables.apiBranch, 'master'), eq(variables.isApiPrOpen, true)) }}: 
+            - task: GitHubComment@0
+              displayName: Comment URL to Api PR
+              inputs:
+                gitHubConnection: <github-service-connection-for-pr-comments>
+                repositoryName: '<organization-name>/<repo-name>' # string. Required. Repository. Default: $(Build.Repository.Name).
+                id: $(apiPrId) # string. ID of the github pr/issue. 
+                comment: '${{ parameters.comment }}' # string. Comment.
+
+          - ${{ if and(ne(variables.webBranch, 'master'), eq(variables.isWebPrOpen, true)) }}: 
+            - task: GitHubComment@0
+              displayName: Comment URL to Web PR
+              inputs:
+                gitHubConnection: <github-service-connection-for-pr-comments>
+                repositoryName: '<organization-name>/<repo-name>' # string. Required. Repository. Default: $(Build.Repository.Name).
+                id: $(webPrId) # string. ID of the github pr/issue. 
+                comment: '${{ parameters.comment }}' # string. Comment.

@@ -1,0 +1,101 @@
+variables:
+  - name: 'vmImageName'
+    value: 'ubuntu-latest'
+  - name: 'serviceConnectionName'
+    value: '<service-connection-name>'
+  - name: 'defaultLocation'
+    value: 'westeurope'
+  - name: 'TenantName'
+    value: ''
+  - name: 'ApiServer'
+    value: ''
+  - name: 'AppServer'
+    value: ''
+  - name: 'UseAzureAppConfig'
+    value: true
+  - name: 'Configuration.AppConfig'
+    value: true
+  - name: 'EvolveEnabled'
+    value: false
+
+parameters:
+- name: reviewName
+  displayName: Tenant Name to Deploy
+  type: string
+  
+- name: apiBranch
+  displayName: Api Branch To Build
+  type: string
+  default: master
+  
+- name: webBranch
+  displayName: Web Branch To Build
+  type: string
+  default: master
+  
+resources:
+  repositories:
+  - repository: apirepo # The name used to reference this repository in the checkout step
+    type: github
+    endpoint: <github-service-connection-name>
+    name: <organization-name>/<repo-name>
+    ref: ${{ parameters.apiBranch }}
+
+  - repository: webrepo # The name used to reference this repository in the checkout step
+    type: github
+    endpoint: <github-service-connection-name>
+    name: <organization-name>/<repo-name>
+    ref: ${{ parameters.webBranch }}
+
+pool:
+  vmImage: $(vmImageName)
+
+trigger: none
+pr: none
+
+stages:
+ 
+  - stage: Deploy
+    displayName: Build & Publish
+    jobs:
+      - template: templates/build-and-publish.yml
+      - template: templates/deploy-review.yml
+        parameters:
+          apiBranch: '${{ parameters.apiBranch }}'
+          webBranch: '${{ parameters.webBranch }}'
+          tenant: '${{ parameters.reviewName }}'
+          dependsOn: 
+          - build_and_publish
+
+  - stage: Teardown
+    dependsOn: Deploy
+    displayName: Delete ReviewApp Environment
+    jobs:
+      - template: templates/wait-for-approval.yml
+      
+      - template: templates/comment-resolution.yml
+        parameters:
+          comment: 'The pipeline resolved by approval'
+          apiBranch: '${{ parameters.apiBranch }}'
+          webBranch: '${{ parameters.webBranch }}'
+          condition: succeeded()
+          jobName: 'CommentApproval'
+          displayName: 'Comment Approval'
+          dependsOn:
+          - wait_for_approval
+          
+      - template: templates/comment-resolution.yml
+        parameters:
+          comment: 'The pipeline resolved by rejection'
+          apiBranch: '${{ parameters.apiBranch }}'
+          webBranch: '${{ parameters.webBranch }}'
+          jobName: 'CommentRejection'
+          displayName: 'Comment Rejection'
+          condition: failed()
+          dependsOn:
+          - wait_for_approval
+          
+      - template: templates/delete-tenant.yml
+        parameters:
+          dependsOn:
+          - wait_for_approval

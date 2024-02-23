@@ -1,0 +1,92 @@
+variables:
+  - name: 'vmImageName'
+    value: 'ubuntu-latest'
+  - name: 'serviceConnectionName'
+    value: '<service-connection-name>'
+  - name: 'appName'
+    value: 'sample-saas'
+  - name: 'defaultLocation'
+    value: 'westeurope'
+  - name: 'TenantName'
+    value: ''
+  - name: 'UseAzureAppConfig'
+    value: true
+  - name: 'EvolveEnabled'
+    value: false
+
+resources:
+  pipelines:
+    - pipeline: api-ci
+      source: 'sample-saas-api-ci'
+    - pipeline: web-ci
+      source: 'sample-saas-frontend-ci'
+
+pool:
+  vmImage: $(vmImageName)
+
+trigger: none
+pr: none
+#clone development stage to add environments
+stages:
+ 
+  - stage: Staging
+    displayName: Deploy to Staging Environment
+    jobs:
+      - template: templates/wait-for-approval.yml
+      - template: templates/deploy-resources.yml
+        parameters:
+          tenant: 'Stagin'
+          dependsOn: 
+          - wait_for_approval
+      - template: templates/deploy-web-apps.yml
+        parameters:
+          tenant: 'Staging'
+          dependsOn: 
+          - deploy_resources
+
+  - stage: StagingWithSlots
+    displayName: Deploy to StagingWithSlots Environment
+    jobs:
+      - template: templates/wait-for-approval.yml
+      - template: templates/deploy-resources.yml
+        parameters:
+          tenant: 'Staging'
+          dependsOn: 
+          - wait_for_approval
+      - template: templates/deploy-web-apps-with-slots.yml
+        parameters:
+          tenant: 'Staging'
+          dependsOn: 
+          - deploy_resources
+
+  - stage: Tenant1
+    displayName: Deploy to Tenant1 Environment
+    jobs:
+      - template: templates/wait-for-approval.yml
+      - template: templates/deploy-resources.yml
+        parameters:
+          tenant: 'Tenant1'
+          dependsOn: 
+          - wait_for_approval
+      - template: templates/deploy-web-apps.yml
+        parameters:
+          tenant: 'Tenant1'
+          dependsOn: 
+          - deploy_resources
+
+  - stage: Tenant2
+    displayName: Deploy to Tenant2 Environment
+    jobs:
+      - template: templates/wait-for-approval.yml
+      - template: templates/deploy-resources.yml
+        parameters:
+          tenant: 'Tenant2'
+          dependsOn: 
+          - wait_for_approval
+          # isLocked: true #default is false
+          #location default is westeurope
+      - template: templates/deploy-web-apps-with-slots.yml
+        parameters:
+          tenant: 'Tenant2'
+          dependsOn: 
+          - deploy_resources

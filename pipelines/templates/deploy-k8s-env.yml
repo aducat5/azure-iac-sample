@@ -1,0 +1,54 @@
+parameters:
+  
+  - name: tenant
+    type: string
+  
+  - name: vmImage
+    type: string
+    values:
+      - ubuntu-latest
+      - windows-latest
+    default: ubuntu-latest
+
+  - name: isLocked
+    type: boolean
+    default: false
+
+  - name: defaultLocation
+    type: string
+    default: westeurope
+
+jobs:
+- deployment: deploy_resources
+  displayName: 'Deploy Resources'
+  environment: '${{ parameters.tenant }}'
+  pool:
+    vmImage: ${{ parameters.vmImage }}     
+  strategy:
+    runOnce:
+      deploy:
+        steps:
+
+          - checkout: self
+            displayName: 'Checkout'
+
+          - download: none
+
+          ##Deploy the necessary resources
+          - task: AzureResourceManagerTemplateDeployment@3
+            displayName: 'Deploy Resources for ${{ parameters.tenant }}'
+            inputs:
+              deploymentScope: "Resource Group"
+              action: "Create Or Update Resource Group"
+              csmFile: 'biceps/deploy-k8s-cluster.bicep'
+              # csmParametersFile: 'configurations/${{ parameters.tenant }}/param.json'
+              deploymentMode: "Incremental"
+              connectedServiceName: $(serviceConnectionName)
+              location: ${{ parameters.defaultLocation }}
+              resourceGroupName: ${{ parameters.tenant }}
+              # deploymentOutputs: 'resourceOutputs'
+              overrideParameters: >
+                -appName review-cluster
+                -tenant ${{ parameters.tenant }}
+                -defaultLocation ${{ parameters.defaultLocation }}
+       

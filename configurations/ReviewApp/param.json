@@ -1,0 +1,28 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+      "databaseSKU": {
+        "value": {
+            "name":"Basic",
+            "tier":"Basic"
+        }
+      },
+      "databaseHangfireSKU": {
+        "value": {
+            "name":"Basic",
+            "tier":"Basic",
+            "capacity":5
+        }
+      },
+      "appServiceSKU": {
+        "value": {
+          "name": "B1",
+          "tier": "Basic",
+          "size": "B1",
+          "family": "B",
+          "capacity": 1
+        }
+      }
+    }
+  }

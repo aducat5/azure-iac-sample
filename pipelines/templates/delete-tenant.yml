@@ -1,0 +1,78 @@
+parameters: 
+# - name: tenant
+#   type: string
+  
+- name: vmImage
+  type: string
+  default: ubuntu-latest
+
+- name: dependsOn
+  type: object
+
+
+jobs:
+- deployment: Delete
+  dependsOn: '${{ parameters.dependsOn }}'
+  condition: always()
+  displayName: 'Delete Review App Resource Group'
+  environment: 'Staging'
+  pool:
+    vmImage: ${{ parameters.vmImage }}     
+  strategy:
+    runOnce:
+      deploy:
+        steps:
+
+          - checkout: self
+            displayName: 'Checkout'
+
+          - task: DownloadPipelineArtifact@1
+            displayName: Download Artifacts
+            inputs:
+              artifactName: 'slug-artifact'
+              targetPath: '$(Build.BinariesDirectory)'
+          
+          - task: AzureCLI@2
+            displayName: 'Get app names from resource group'
+            inputs:
+              azureSubscription: $(serviceConnectionName)
+              scriptType: 'pscore'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+              
+                $slug = Get-Content -Path $(Build.BinariesDirectory)/slug.txt
+                Write-Output "Using slug: $slug"
+
+                $webAppName = az webapp list -g $slug --query "sort_by(@, &name)[1].name" --output tsv
+                $webAppUrl = "https://$webAppName.azurewebsites.net"
+
+                Write-Host "##vso[task.setvariable variable=AppServer;]$webAppUrl"
+                Write-Host "##vso[task.setvariable variable=Tenant;]$slug"
+
+          - script: |
+              node ./scripts/manage-identity.js $(AppServer) -d
+            displayName: 'Remove Identity from Auth0'
+
+          - task: AzureCLI@2
+            displayName: 'Delete Resource Group'
+            inputs:
+              azureSubscription: $(serviceConnectionName)
+              scriptType: 'pscore'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az appconfig kv delete --name <app-config-resource-name> --label $(Tenant) --key "*" --yes
+                az group delete --name $(Tenant) --yes
+          
+          # - task: AzurePowerShell@4
+          #   displayName: 'Force Delete Resource Group'
+          #   inputs:
+          #     azureSubscription: $(serviceConnectionName)
+          #     scriptType: 'InlineScript'
+          #     Inline: |
+          #       $sqlServerName = az sql server list -g ${{ parameters.tenant }} --query "[0].name" --output tsv
+          #       Remove-AzSqlServer -ResourceGroupName "${{ parameters.tenant }}" -ServerName "<sql-server-resource-name" -Force
+          #       az group delete --name ${{ parameters.tenant }} --yes
+          #     azurePowerShellVersion: 'latestVersion'
+          #     pwsh: true
+            # condition: failed()
+

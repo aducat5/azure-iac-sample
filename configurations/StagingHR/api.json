@@ -1,0 +1,33 @@
+﻿{
+    "ApiServer": "https://api-staging.samplesaas.com",
+    "AppServer": "https://staging.samplesaas.com",
+    "Authentication": {
+        "Audience": "https://samplesaas-api.com",
+        "Authority": "https://samplesaas-staging.eu.auth0.com"
+    },
+    "Configuration": {
+        "AddToAzureQueue": false,
+        "AzureServiceBus": "<service-bus-endpoint>",
+        "Database": "<local-database-connectionstring-it-does-not-matter-these-are-to-be-replaced",
+        "EnableSwagger": false,
+        "FileStorage": "",
+        "HangfireFunctions": "nothing",
+        "SendDeveloperMails": 1,
+        "SendMailFrom": "help@samplesaas.com",
+        "StorageConnString": "<app-config-connection-string>",
+        "SendEmailFromAzureDeQueuing": false,
+        "Url": "https://samplesaas.azurewebsites.net",
+        "UseCustomEmail":  false
+    },
+    "Keys": {
+        "GoogleAPI": "<GoogleAPIKey>"
+    },
+   "Sibylline": {
+       "email": "info@samplesaas.com",
+       "password": "<yourpassword>"
+   },
+    "WhoAmI": {
+        "Name": "Api.IaC",
+        "Version": "Dev"
+    }
+}

@@ -1,0 +1,389 @@
+parameters:
+  - name: tenant
+    type: string
+  
+  - name: vmImage
+    type: string
+    values:
+      - ubuntu-latest
+      - windows-latest
+    default: ubuntu-latest
+
+  - name: isLocked
+    type: boolean
+    default: false
+
+  - name: defaultLocation
+    type: string
+    default: westeurope
+  
+  - name: apiBranch
+    type: string
+    default: master
+
+  - name: webBranch
+    type: string
+    default: master
+
+  - name: dependsOn
+    type: object
+
+jobs:
+- deployment: deploy_review
+  dependsOn: '${{ parameters.dependsOn }}'
+  displayName: 'Deploy Resources'
+  environment: 'Staging'
+  pool:
+    vmImage: ${{ parameters.vmImage }}     
+  strategy:
+    runOnce:
+      deploy:
+        steps:
+          - checkout: self
+            displayName: 'Checkout'
+ 
+          - task: DownloadPipelineArtifact@1
+            inputs:
+              artifactName: 'preview-drop'
+              targetPath: '$(Build.BinariesDirectory)'
+            displayName: Download Build Artifacts
+          
+          - task: PowerShell@2
+            name: 'GenerateReviewTenant'
+            displayName: 'Generate Review Tenant Configurations'
+            inputs:
+              targetType: inline
+              script: |
+                # Lowercase and replace spaces with underscores
+                $tenant_name = '${{ parameters.tenant }}'
+                $slug_base = $tenant_name.ToLower().Replace(' ', '')
+
+                # Abbreviate the slug_base if too long. Leaving 6 chars for suffix to keep total length <= 15.
+                if ($slug_base.Length -gt 10) {
+                    $slug_base = $slug_base.Substring(0, 10)
+                }
+
+                # Generate a unique 5-digit suffix using modulo operation on current time ticks
+                $unique_suffix = (Get-Date).Ticks % 100000
+
+                # Construct final slug
+                $slug = "${slug_base}$unique_suffix"
+
+                # Set the slug as TenantName
+                Write-Host "##vso[task.setvariable variable=TenantName]$slug"
+                
+                Write-Output "Generated slug: $slug"
+                Set-Content -Path $(Build.ArtifactStagingDirectory)/slug.txt -Value $slug
+
+                # Copy the configuration from base
+                cp -r configurations/ReviewApp configurations/$slug
+              pwsh: true
+              
+          - task: PublishPipelineArtifact@1
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)/slug.txt'
+              artifactName: 'slug-artifact'
+
+          ##Deploy the necessary resources
+          - task: AzureResourceManagerTemplateDeployment@3
+            displayName: 'Deploy Resources'
+            inputs:
+              deploymentScope: "Resource Group"
+              action: "Create Or Update Resource Group"
+              csmFile: 'biceps/deploy-sample-saas.bicep'
+              csmParametersFile: 'configurations/$(TenantName)/param.json'
+              deploymentMode: "Incremental"
+              connectedServiceName: $(serviceConnectionName)
+              location: ${{ parameters.defaultLocation }}
+              resourceGroupName: $(TenantName)
+              deploymentOutputs: 'resourceOutputs'
+              overrideParameters: >
+                -isReview true
+                -tenant $(TenantName)
+                -defaultLocation ${{ parameters.defaultLocation }}
+
+          ##Deploy the config store
+          - task: AzureResourceManagerTemplateDeployment@3
+            displayName: 'Deploy Config Store'
+            inputs:
+              deploymentScope: "Resource Group"
+              action: "Create Or Update Resource Group"
+              csmFile: 'biceps/deploy-configuration.bicep'
+              deploymentMode: "Incremental"
+              connectedServiceName: $(serviceConnectionName)
+              location: $(defaultLocation)
+              resourceGroupName: 'Shared'
+              deploymentOutputs: 'configOutputs'
+
+          ##Parse bicep outputs
+          - task: PowerShell@2
+            name: 'SetOutputVariables'
+            displayName: 'Set Output Variables'
+            inputs:
+              targetType: inline
+              script: |
+                $armOutputObj = '$(resourceOutputs)' | ConvertFrom-Json
+                $armOutputObj.PSObject.Properties | ForEach-Object {
+                  $keyname = $_.Name
+                  $value = $_.Value.value
+
+                  # Creates a standard pipeline variable
+                  Write-Output "##vso[task.setvariable variable=$keyName;]$value"
+
+                  # Creates an output variable
+                  Write-Output "##vso[task.setvariable variable=$keyName;issecret=false;isOutput=true]$value"
+
+                  # Display keys in pipeline
+                  Write-Output "output variable: $keyName"
+                }
+                
+                $armOutputObj = '$(configOutputs)' | ConvertFrom-Json
+                $armOutputObj.PSObject.Properties | ForEach-Object {
+                  $keyname = $_.Name
+                  $value = $_.Value.value
+
+                  # Creates a standard pipeline variable
+                  Write-Output "##vso[task.setvariable variable=$keyName;]$value"
+
+                  # Creates an output variable
+                  Write-Output "##vso[task.setvariable variable=$keyName;issecret=false;isOutput=true]$value"
+
+                  # Display keys in pipeline
+                  Write-Output "output variable: $keyName"
+                }
+              pwsh: true
+
+          - task: PowerShell@2
+            name: 'SetTransformVariables'
+            displayName: 'Set Transform Variables'
+            inputs:
+              targetType: inline
+              script: |
+                Write-Host "##vso[task.setvariable variable=TenantName;]$(TenantName)"
+                Write-Host "##vso[task.setvariable variable=ApiServer;]$(apiAppUrl)"
+                Write-Host "##vso[task.setvariable variable=AppServer;]$(webAppUrl)"
+                Write-Host "##vso[task.setvariable variable=Configuration.AppConfig;]$(configStoreConnectionString)"
+              pwsh: true
+              
+          - script: |
+              node ./scripts/manage-identity.js $(AppServer) -a
+            displayName: 'Add Identity to Auth0'
+
+          ##Import configuration
+          - task: AzureCLI@2
+            displayName: Import Common Config
+            inputs:
+              azureSubscription: $(serviceConnectionName)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az appconfig kv import -s file \
+                  --format json \
+                  --path "configurations/common.json" \
+                  --name $(configStoreName) \
+                  --content-type "application/json" \
+                  --separator : \
+                  --depth 2 \
+                  --yes
+
+                az appconfig kv import -s file \
+                  --format json \
+                  --path "configurations/$(TenantName)/api.json" \
+                  --name $(configStoreName) \
+                  --content-type "application/json" \
+                  --separator : \
+                  --depth 2 \
+                  --label $(TenantName) \
+                  --yes
+
+          ##Save the runtime generated configs
+          - task: AzureResourceManagerTemplateDeployment@3
+            displayName: 'Save Runtime Config'
+            inputs:
+              deploymentScope: "Resource Group"
+              action: "Create Or Update Resource Group"
+              csmFile: 'biceps/save-configuration.bicep'
+              deploymentMode: "Incremental"
+              connectedServiceName: $(serviceConnectionName)
+              location: ${{ parameters.defaultLocation }}
+              resourceGroupName: 'Shared'
+              overrideParameters: >
+                -tenant $(TenantName)
+                -configStoreName $(configStoreName)
+                -sqlConnection "$(sqlConnection)"
+                -hangfireConnection "$(hangfireConnection)"
+                -storageConnection "$(storageConnection)"
+                
+          ##Make the migrations
+          - pwsh: |
+                dotnet tool install --global Evolve.Tool
+                mkdir -p $(Pipeline.Workspace)/SQL
+
+                # get migrations from version
+                unzip $(Build.BinariesDirectory)/preview-api.zip "SQL/*" -d "$(Pipeline.Workspace)/SQL"
+                
+                # inject custom sql files  
+                cp scripts/set-superuser.sql $(Pipeline.Workspace)/SQL/R__SetSuperUser.sql
+                
+                evolve migrate sqlserver -c "$(sqlConnection)" -l "$(Pipeline.Workspace)/SQL"
+            displayName: 'Apply Migrations'
+
+          ##Apply configs to web app
+          - pwsh: |
+              $configPath = 'assets/appsettings.json'
+              mkdir -p assets
+              cp configurations/$(TenantName)/web.json $configPath
+              zip $(Build.BinariesDirectory)/preview-web.zip $configPath
+
+            displayName: Update config file for web
+
+          #Replacements before deployment. PS: some of the variables that is replaced comes from the bicep outputs. check deployed biceps for further information.
+          - task: FileTransform@2
+            displayName: 'Replace Api'
+            inputs:
+              folderPath: '$(Build.BinariesDirectory)/preview-api.zip' # string. Required. Package or folder. Default: $(System.DefaultWorkingDirectory)/**/*.zip.
+              jsonTargetFiles: '**/appsettings.json'
+              xmlTargetFiles: ''
+              xmlTransformationRules: ''
+
+          #Replacements before deployment. PS: some of the variables that is replaced comes from the bicep outputs. check deployed biceps for further information.
+          - task: FileTransform@2
+            displayName: 'Replace Web'
+            inputs:
+              folderPath: '$(Build.BinariesDirectory)/preview-web.zip' # string. Required. Package or folder. Default: $(System.DefaultWorkingDirectory)/**/*.zip.
+              jsonTargetFiles: '**/appsettings.json'
+              xmlTargetFiles: ''
+              xmlTransformationRules: ''
+
+          #This step is for a bug of azure, when the resources are created in pipeline, sometimes azure does not recognize it, so it gives an error saying there are no resources to deploy application. 
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: $(serviceConnectionName)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                # Variables
+                resourceGroup=$(TenantName)
+
+                apiAppName=$(apiAppName)
+                apiZipPath='$(Build.BinariesDirectory)/preview-api.zip'
+
+                webAppName=$(webAppName)
+                webZipPath='$(Build.BinariesDirectory)/preview-web.zip'
+
+                retryCount=0
+                maxRetries=20
+                delayBetweenRetries=60 # in seconds
+
+                # Function to deploy the api app
+                deployApiApp() {
+                  az webapp deploy --resource-group $resourceGroup --name $apiAppName --type zip --src-path $apiZipPath --restart true
+                }
+
+                # Function to deploy the web app
+                deployWebApp() {
+                  az webapp deploy --resource-group $resourceGroup --name $webAppName --type zip --src-path $webZipPath --restart true
+                }
+
+                # Loop until the command is successful or the max retry count is reached
+                until deployApiApp; do
+                  ((retryCount++))
+                  echo "Deployment failed! Attempt $retryCount/$maxRetries"
+                  if [ $retryCount -ge $maxRetries ]; then
+                    echo "Max retries reached. Exiting..."
+                    exit 1
+                  fi
+                  echo "Retrying in $delayBetweenRetries seconds..."
+                  sleep $delayBetweenRetries
+                done
+                
+                echo "Api App Deployed Successfully to: $(ApiServer)"
+                retryCount=0
+
+                # Loop until the command is successful or the max retry count is reached
+                until deployWebApp; do
+                  ((retryCount++))
+                  echo "Deployment failed! Attempt $retryCount/$maxRetries"
+                  if [ $retryCount -ge $maxRetries ]; then
+                    echo "Max retries reached. Exiting..."
+                    exit 1
+                  fi
+                  echo "Retrying in $delayBetweenRetries seconds..."
+                  sleep $delayBetweenRetries
+                done
+
+                echo "Web App Deployed Successfully to: $(AppServer)"
+
+            displayName: 'Deploy App'
+
+          - powershell: |
+              #trim and save branch names
+              
+              $apiBranch = "${{ parameters.apiBranch }}"
+              $webBranch = "${{ parameters.webBranch }}"
+
+              Write-Host "##vso[task.setvariable variable=apiBranch;]$apiBranch"
+              Write-Host "##vso[task.setvariable variable=webBranch;]$webBranch"
+              
+              $owner = "sample-saas-organization"
+              $apiRepo = "sample-saas-api"
+              $webRepo = "sample-saas-frontend"
+
+              $token = "$(GitHubPAT)" # Replace with your GitHub Personal Access Token
+              
+              $headers = @{
+                "Authorization" = "Bearer $Token"
+                "Accept" = "application/vnd.github.v3+json"
+              }
+
+              if ($apiBranch -ne 'master'){
+                  $response = Invoke-RestMethod -Uri "https://api.github.com/repos/$owner/$apiRepo/pulls" -Headers $headers -Method Get
+                  $pullRequest = $response | Where-Object { $_.head.ref -eq $apiBranch }
+                  
+                  if ($pullRequest) {
+                      Write-Host "ID of the pull request with head branch '$apiBranch': $($pullRequest.number)"
+                      Write-Host "##vso[task.setvariable variable=isApiPrOpen;]$(true)"
+                      Write-Host "##vso[task.setvariable variable=apiPrId;]$($pullRequest.number)"
+                  } else {
+                      Write-Host "No pull request found for head branch '$apiBranch'"
+                      Write-Host "##vso[task.setvariable variable=isApiPrOpen;]$(false)"
+                  }
+              }
+
+              if ($webBranch -ne 'master'){
+                  $response = Invoke-RestMethod -Uri "https://api.github.com/repos/$owner/$webRepo/pulls" -Headers $headers -Method Get
+                  $pullRequest = $response | Where-Object { $_.head.ref -eq $webBranch }
+                  
+                  if ($pullRequest) {
+                      Write-Host "ID of the pull request with head branch '$webBranch': $($pullRequest.number)"
+                      Write-Host "##vso[task.setvariable variable=isWebPrOpen;]$(true)"
+                      Write-Host "##vso[task.setvariable variable=webPrId;]$($pullRequest.number)"
+                  } else {
+                      Write-Host "##vso[task.setvariable variable=isWebPrOpen;]$(false)"
+                      Write-Host "No pull request found for head branch '$webBranch'"
+                  }
+              }
+              
+              $buildUrl = "$(System.TeamFoundationCollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)"
+              Write-Host "##vso[task.setvariable variable=buildUrl;]$buildUrl"
+            continueOnError: true
+            errorActionPreference: 'silentlyContinue'
+            displayName: 'Find and save pr ids if there is.'
+
+          - ${{ if and(ne(variables.apiBranch, 'master'), eq(variables.isApiPrOpen, true)) }}: 
+            - task: GitHubComment@0
+              displayName: Comment URL to Api PR
+              inputs:
+                gitHubConnection: <github-service-connection-for-pr-comments>
+                repositoryName: '<organization-name>/<repo-name>' # string. Required. Repository. Default: $(Build.Repository.Name).
+                id: $(apiPrId) # string. ID of the github pr/issue. 
+                comment: '🚀🚀🔥🔥 Review App of this pull request can be found at $(AppServer) 🔥🔥 🚀🚀, Review pipeline is running at $(buildUrl) ⚙️⚙️' # string. Comment.
+
+          - ${{ if and(ne(variables.webBranch, 'master'), eq(variables.isWebPrOpen, true)) }}: 
+            - task: GitHubComment@0
+              displayName: Comment URL to Web PR
+              inputs:
+                gitHubConnection: <github-service-connection-for-pr-comments>
+                repositoryName: '<organization-name>/<repo-name>' # string. Required. Repository. Default: $(Build.Repository.Name).
+                id: $(webPrId) # string. ID of the github pr/issue. 
+                comment: '🚀🚀🔥🔥 Review App of this pull request can be found at $(AppServer) 🔥🔥 🚀🚀, Review pipeline is running at $(buildUrl) ⚙️⚙️' # string. Comment.

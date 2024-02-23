@@ -1,0 +1,26 @@
+parameters: 
+
+- name: vmImage
+  type: string
+  default: ubuntu-latest
+
+jobs:
+- deployment: wait_for_approval
+  displayName: 'Approval for Review App Resource Group'
+  environment: 'Staging'
+  pool: server  
+  timeoutInMinutes: 4320 # job times out in 3 days
+  strategy:
+    runOnce:
+      deploy:
+        steps:
+          - task: ManualValidation@0
+            timeoutInMinutes: 1440 # task times out in 1 day
+            inputs:
+              notifyUsers: |
+                your@email.com
+                someone@else.com
+                someone@other.com
+              instructions: 'Do you want to delete the env for the Review App?'
+              onTimeout: 'resume'
+              

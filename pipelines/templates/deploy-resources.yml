@@ -1,0 +1,180 @@
+parameters:
+- name: tenant
+  type: string
+
+- name: vmImage
+  type: string
+  values:
+    - ubuntu-latest
+    - windows-latest
+  default: ubuntu-latest
+
+- name: isLocked
+  type: boolean
+  default: false
+
+- name: defaultLocation
+  type: string
+  default: westeurope
+
+- name: dependsOn
+  type: object
+    
+jobs:
+- deployment: deploy_resources
+  displayName: 'Deploy Resources'
+  dependsOn: '${{ parameters.dependsOn }}'
+  environment: '${{ parameters.tenant }}'
+  pool:
+    vmImage: ${{ parameters.vmImage }}     
+  strategy:
+    runOnce:
+      deploy:
+        steps:
+
+          - checkout: self
+            displayName: 'Checkout'
+
+          ##Deploy the necessary resources
+          - task: AzureResourceManagerTemplateDeployment@3
+            displayName: 'Deploy Resources for $(appName) to ${{ parameters.tenant }}'
+            inputs:
+              deploymentScope: "Resource Group"
+              action: "Create Or Update Resource Group"
+              csmFile: 'biceps/deploy-sample-saas.bicep'
+              csmParametersFile: 'configurations/${{ parameters.tenant }}/param.json'
+              deploymentMode: "Incremental"
+              connectedServiceName: $(serviceConnectionName)
+              location: ${{ parameters.defaultLocation }}
+              resourceGroupName: ${{ parameters.tenant }}
+              deploymentOutputs: 'resourceOutputs'
+              overrideParameters: >
+                -appName $(appName)
+                -tenant ${{ parameters.tenant }}
+                -defaultLocation ${{ parameters.defaultLocation }}
+          ##Deploy Metrics
+          - task: AzureResourceManagerTemplateDeployment@3
+            displayName: 'Deploy Metrics for ${{ parameters.tenant }}'
+            inputs:
+              continueOnError: true
+              deploymentScope: "Resource Group"
+              action: "Create Or Update Resource Group"
+              csmFile: 'biceps/deploy-metrics.bicep'
+              deploymentMode: "Incremental"
+              connectedServiceName: $(serviceConnectionName)
+              location: ${{ parameters.defaultLocation }}
+              resourceGroupName: ${{ parameters.tenant }}
+              deploymentOutputs: 'resourceOutputs'
+              overrideParameters: >
+                -appName $(appName)
+                -tenant ${{ parameters.tenant }}
+                -defaultLocation ${{ parameters.defaultLocation }}
+          ##Deploy the config store
+          - task: AzureResourceManagerTemplateDeployment@3
+            displayName: 'Deploy Config Store'
+            inputs:
+              deploymentScope: "Resource Group"
+              action: "Create Or Update Resource Group"
+              csmFile: 'biceps/deploy-configuration.bicep'
+              deploymentMode: "Incremental"
+              connectedServiceName: $(serviceConnectionName)
+              location: $(defaultLocation)
+              resourceGroupName: 'Shared'
+              deploymentOutputs: 'configOutputs'
+          ##Parse bicep outputs
+          - task: PowerShell@2
+            name: 'SetOutputVariables'
+            displayName: 'Set Output Variables'
+            inputs:
+              targetType: inline
+              script: |
+                $armOutputObj = '$(resourceOutputs)' | ConvertFrom-Json
+                $armOutputObj.PSObject.Properties | ForEach-Object {
+                  $keyname = $_.Name
+                  $value = $_.Value.value
+
+                  # Creates a standard pipeline variable
+                  Write-Output "##vso[task.setvariable variable=$keyName;]$value"
+
+                  # Creates an output variable
+                  Write-Output "##vso[task.setvariable variable=$keyName;issecret=false;isOutput=true]$value"
+
+                  # Display keys in pipeline
+                  Write-Output "output variable: $keyName"
+                }
+                
+                $armOutputObj = '$(configOutputs)' | ConvertFrom-Json
+                $armOutputObj.PSObject.Properties | ForEach-Object {
+                  $keyname = $_.Name
+                  $value = $_.Value.value
+
+                  # Creates a standard pipeline variable
+                  Write-Output "##vso[task.setvariable variable=$keyName;]$value"
+
+                  # Creates an output variable
+                  Write-Output "##vso[task.setvariable variable=$keyName;issecret=false;isOutput=true]$value"
+
+                  # Display keys in pipeline
+                  Write-Output "output variable: $keyName"
+                }
+              pwsh: true
+          - task: PowerShell@2
+            name: 'SetTransformVariables'
+            displayName: 'Set Transform Variables'
+            inputs:
+              targetType: inline
+              script: |
+                Write-Host "##vso[task.setvariable variable=TenantName;]${{ parameters.tenant }}"
+                Write-Host "##vso[task.setvariable variable=ApiServer;]$(apiAppUrl)"
+                Write-Host "##vso[task.setvariable variable=AppServer;]$(webAppUrl)"
+              pwsh: true
+          ##Import configuration
+          - task: AzureCLI@2
+            displayName: Import Common Config
+            inputs:
+              azureSubscription: $(serviceConnectionName)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az appconfig kv import -s file \
+                  --format json \
+                  --path "configurations/common.json" \
+                  --name $(configStoreName) \
+                  --content-type "application/json" \
+                  --separator : \
+                  --depth 2 \
+                  --yes
+
+                az appconfig kv import -s file \
+                  --format json \
+                  --path "configurations/${{ parameters.tenant }}/api.json" \
+                  --name $(configStoreName) \
+                  --content-type "application/json" \
+                  --separator : \
+                  --depth 2 \
+                  --label ${{ parameters.tenant }} \
+                  --yes
+          ##Save the runtime generated configs
+          - task: AzureResourceManagerTemplateDeployment@3
+            displayName: 'Save Runtime Config'
+            inputs:
+              deploymentScope: "Resource Group"
+              action: "Create Or Update Resource Group"
+              csmFile: 'biceps/save-configuration.bicep'
+              deploymentMode: "Incremental"
+              connectedServiceName: $(serviceConnectionName)
+              location: ${{ parameters.defaultLocation }}
+              resourceGroupName: 'Shared'
+              overrideParameters: >
+                -tenant ${{ parameters.tenant }}
+                -configStoreName $(configStoreName)
+                -sqlConnection "$(sqlConnection)"
+                -hangfireConnection "$(hangfireConnection)"
+                -storageConnection "$(storageConnection)"
+          ##Make the migrations
+          - pwsh: |
+                dotnet tool install --global Evolve.Tool
+                mkdir -p $(Pipeline.Workspace)/SQL
+                unzip $(Pipeline.Workspace)/api-ci/drop/publish/publish.zip "SQL/*" -d "$(Pipeline.Workspace)/SQL"
+                evolve migrate sqlserver -c "$(sqlConnection)" -l "$(Pipeline.Workspace)/SQL"
+            displayName: 'Apply Migrations'

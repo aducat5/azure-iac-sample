@@ -1,0 +1,29 @@
+﻿{
+  "AppServer": "replace-with-web-url",
+  "ApiServer": "replace-with-api-url",
+  "AuditServer": "https://tenant2.azurewebsites.net",
+  "GoogleApiKey": "<GoogleAPIKey>",
+  "dateFormatLong": "DD MMM yyyy HH:mm:ss",
+  "dateFormatMedium": "DD MMM yyy HH:mm",
+  "dateFormatShort": "DD MMM yyyy",
+  "Authentication": {
+    "Authority": "https://tenant2-staging.eu.auth0.com/",
+    "ClientId": "<ClientId>",
+    "ApiAudience": "https://tenant2-api.com",
+    "Auth0OrgId": "",
+    "AuthFlow": "CODE",
+    "LoginUrl": "",
+    "LogoutUrl": "https://tenant2-staging.eu.auth0.com/v2/logout",
+    "TokenUrl": "",
+    "RevocationUrl": "",
+    "SilentRefresh": true,
+    "BYOI": {
+      "Enabled": false,
+      "Kid": "",
+      "PubKeyUrl": "",
+      "UseDiscovery": true,
+      "UseExternalRoles": false
+    }
+  },
+  "PdfUrl": "https://tenant2-function.azurewebsites.net/api/GeneratePdf"
+}

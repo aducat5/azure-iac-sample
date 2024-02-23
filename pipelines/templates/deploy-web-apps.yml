@@ -1,0 +1,110 @@
+parameters:
+  - name: tenant
+    type: string
+  
+  - name: dependsOn
+    type: object
+
+  - name: vmImage
+    type: string
+    values:
+      - ubuntu-latest
+      - windows-latest
+    default: ubuntu-latest
+
+jobs:
+- deployment: deploy_web_apps
+  displayName: 'Deploy Web Apps'
+  environment: '${{ parameters.tenant }}'
+  pool:
+    vmImage: ${{ parameters.vmImage }}     
+  dependsOn: '${{ parameters.dependsOn }}'
+  strategy:
+    runOnce:
+      deploy:
+        steps:
+
+          - checkout: self
+            displayName: 'Checkout'
+            
+          - download: api-ci
+            displayName: 'Download Artifacts for Api'
+            artifact: drop
+
+          - download: web-ci
+            displayName: 'Download Artifacts for Web'
+            artifact: drop
+            
+          - task: AzureCLI@2
+            displayName: 'Get app names from resource group'
+            inputs:
+              azureSubscription: $(serviceConnectionName)
+              scriptType: 'pscore'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                # set the tenant
+                $tenant = "${{ parameters.tenant }}"
+                
+                # set the api app name
+                $apiAppName = az webapp list -g $tenant --query "sort_by(@, &name)[0].name" --output tsv
+                
+                # set the web app nmame
+                $webAppName = az webapp list -g $tenant --query "sort_by(@, &name)[1].name" --output tsv
+
+                # get the urls
+                $apiAppUrl = az webapp show --name $apiAppName --resource-group $tenant --query enabledHostNames[0] --output tsv
+                $apiAppUrl = "https://$apiAppUrl"
+                $webAppUrl =  az webapp show --name $webAppName --resource-group $tenant --query enabledHostNames[0] --output tsv
+                $webAppUrl = "https://$webAppUrl"
+
+                Write-Host "##vso[task.setvariable variable=TenantName;]$tenant"
+                Write-Host "##vso[task.setvariable variable=apiAppName;]$apiAppName"
+                # Write-Host "##vso[task.setvariable variable=ApiServer;]$apiAppUrl"
+                Write-Host "##vso[task.setvariable variable=webAppName;]$webAppName"
+                # Write-Host "##vso[task.setvariable variable=AppServer;]$webAppUrl"
+
+          ##Apply configs to web app
+          - pwsh: |
+              $configPath = 'assets/appsettings.json'
+              mkdir -p assets
+              cp configurations/${{ parameters.tenant }}/web.json $configPath
+              zip $(Pipeline.Workspace)/web-ci/drop/publish/publish.zip $configPath
+            displayName: Update config file for web
+
+          #Replacements before deployment. PS: some of the variables that is replaced comes from the bicep outputs. check deployed biceps for further information.
+          - task: FileTransform@2
+            displayName: 'Replace Api'
+            inputs:
+              folderPath: '$(Pipeline.Workspace)/api-ci/drop/publish/publish.zip' # string. Required. Package or folder. Default: $(System.DefaultWorkingDirectory)/**/*.zip.
+              jsonTargetFiles: '**/appsettings.json'
+              xmlTargetFiles: ''
+              xmlTransformationRules: ''
+
+          #Replacements before deployment. PS: some of the variables that is replaced comes from the bicep outputs. check deployed biceps for further information.
+          - task: FileTransform@2
+            displayName: 'Replace Web'
+            inputs:
+              folderPath: '$(Pipeline.Workspace)/web-ci/drop/publish/publish.zip' # string. Required. Package or folder. Default: $(System.DefaultWorkingDirectory)/**/*.zip.
+              jsonTargetFiles: '**/appsettings.json'
+              xmlTargetFiles: ''
+              xmlTransformationRules: ''
+
+          ##Deploy the app services
+          - task: AzureRmWebAppDeployment@4
+            displayName: 'Deploy Api App'
+            inputs:
+              azureSubscription: $(serviceConnectionName)
+              appType: 'webApp'
+              WebAppName: $(apiAppName)
+              ResourceGroupName: ${{ parameters.tenant }}
+              package: '$(Pipeline.Workspace)/api-ci/drop/publish/publish.zip'
+          
+          - task: AzureRmWebAppDeployment@4
+            displayName: 'Deploy Web App'
+            inputs:
+              azureSubscription: $(serviceConnectionName)
+              ResourceGroupName: ${{ parameters.tenant }}
+              appType: 'Web App On Windows'
+              WebAppName: $(webAppName)
+              package: '$(Pipeline.Workspace)/web-ci/drop/publish/publish.zip'  
+

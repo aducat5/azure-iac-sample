@@ -1,0 +1,66 @@
+parameters:
+  - name: buildConfiguration
+    type: string
+    default: Release
+  
+  - name: vmImage
+    type: string
+    values:
+      - ubuntu-latest
+      - windows-latest
+    default: ubuntu-latest
+
+jobs:
+- deployment: build_and_publish
+  displayName: 'Build Branches & Publish Artifacts'
+  environment: 'Staging'
+  pool:
+    vmImage: ${{ parameters.vmImage }}     
+  strategy:
+    runOnce:
+      deploy:
+        steps:
+          - checkout: apirepo
+            displayName: 'Checkout Api'
+          - checkout: webrepo
+            displayName: 'Checkout Web'
+
+          - task: UseDotNet@2
+            displayName: Install Latest Dotnet
+            inputs:
+              version: '7.x'
+
+          - task: Npm@1
+            displayName: 'Install NPM 8.5 Global'
+            inputs:
+              command: custom
+              verbose: false
+              customCommand: 'install -g npm@8.5.0'
+
+          - bash: |
+              cd sample-saas-api
+              dotnet restore
+              dotnet build --no-restore --configuration ${{ parameters.buildConfiguration }}
+              dotnet publish ./SampleSaas.API/SampleSaas.API.csproj --no-restore --configuration ${{ parameters.buildConfiguration }} --output ../preview-api
+              cd ../preview-api
+              zip -r $(Build.ArtifactStagingDirectory)/preview-api.zip *
+            displayName: Dotnet CI Steps
+
+          - bash: |
+              cd sample-saas-frontend
+              npm install
+              npm install @angular/cli --force
+              npm run prod-build
+              npm run post-build
+              cd dist/sample-saas-frontend
+              zip -r $(Build.ArtifactStagingDirectory)/preview-web.zip *
+            displayName: Angular CI Steps
+
+          # this code takes all the files in $(Build.ArtifactStagingDirectory) and uploads them as an artifact of your build.
+          - task: PublishPipelineArtifact@1
+            displayName: Publish Artifacts
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)' 
+              artifactName: 'preview-drop'
+            # condition: succeededOrFailed()
+          

@@ -1,0 +1,36 @@
+variables:
+  - name: 'vmImageName'
+    value: 'ubuntu-latest'
+  - name: 'serviceConnectionName'
+    value: '<service-connection-name>'
+
+pool:
+  vmImage: $(vmImageName)
+
+trigger: none
+pr: none
+#clone development stage to add environments
+stages:
+  - stage: Tenant1
+    displayName: Delete Tenant1 Environment
+    jobs:
+      - template: templates/delete-tenant.yml
+        parameters:
+          tenant: 'Tenant1'
+
+  - stage: Tenant2
+    displayName: Delete Tenant2 Environment
+    jobs:
+      - template: templates/delete-tenant.yml
+        parameters:
+          tenant: 'Tenant2'
+
+  - stage: Tenant3
+    displayName: Delete Tenant3 Environment
+    jobs:
+      - template: templates/delete-tenant.yml
+        parameters:
+          tenant: 'Tenant3'
+
+##CAUTION END!!!!! THIS STEP IS ONLY FOR DEVELOPMENT PURPOSES, REMOVE FOR ANYTHING ELSE
+          

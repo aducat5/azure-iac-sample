@@ -1,0 +1,131 @@
+trigger: none
+pr: none
+
+parameters:
+- name: tenant
+  displayName: Tenant to Restore
+  type: string
+  default: 'Staging'
+  values:
+  - Staging
+  - Tenant1
+  - Tenant2
+  - Tenant3
+
+- name: image
+  displayName: Pool Image
+  type: string
+  default: ubuntu-latest
+  values:
+  - ubuntu-latest
+
+- name: server
+  displayName: Sql Server
+  type: string
+  default: <sql-server-resource-name>
+
+- name: database
+  displayName: Sql Database
+  type: string
+  default: <database-resource-name>
+
+- name: minutes
+  displayName: Restore Back To Minutes
+  type: string
+  default: '2'
+
+- name: storage
+  displayName: Storage Account
+  default: <storage-account-resource-name>
+  type: string
+
+
+jobs:
+  - job: restoreStorageAccountApproval
+    displayName: Restore Storage Account Approval
+    pool: server
+    timeoutInMinutes: 4320 # job times out in 3 days
+    steps:
+    - task: ManualValidation@0
+      timeoutInMinutes: 1440 # task times out in 1 day
+      inputs:
+        notifyUsers: |
+          your@email.com
+        instructions: 'Do you want to restore the storage account for client ${{ parameters.tenant }}?'
+        onTimeout: 'resume'
+
+  - job: restoreStorageAccount
+    displayName: Restore Storage Account
+    dependsOn: restoreStorageAccountApproval
+    pool:
+      vmImage: ${{ parameters.image }}
+    timeoutInMinutes: 4320 # job times out in 3 days
+    steps:
+    - task: AzureCLI@2
+      displayName: Restore
+      inputs:
+        azureSubscription: <service-connection-name>
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          minutes=${{ parameters.minutes }}
+
+          restorePoint=$(date +%s)
+          restorePoint=$(expr $restorePoint - $(( $minutes * 60 )))
+          restorePoint=$(date -d @$restorePoint +"%Y-%m-%dT%H:%MZ")
+          
+          echo $restorePoint
+
+          az storage blob restore \
+            --resource-group ${{ parameters.tenant }} \
+            --account-name ${{ parameters.storage }} \
+            --time-to-restore $restorePoint \
+            --no-wait
+          
+  - job: restoreDatabaseApproval
+    displayName: Restore Database Approval
+    pool: server
+    timeoutInMinutes: 4320 # job times out in 3 days
+    steps:
+    - task: ManualValidation@0
+      timeoutInMinutes: 1440 # task times out in 1 day
+      inputs:
+        notifyUsers: |
+          your@email.com
+          someone@else.com
+          someone@other.com
+        instructions: 'Do you want to restore the database for client ${{ parameters.tenant }}?'
+        onTimeout: 'resume'
+
+  - job: restoreDatabase
+    displayName: Restore Database
+    dependsOn: restoreDatabaseApproval
+    pool:
+      vmImage: ${{ parameters.image }}  
+    timeoutInMinutes: 4320 # job times out in 3 days
+    steps:
+    - task: AzureCLI@2
+      displayName: Restore
+      inputs:
+        azureSubscription: <service-connection-name>
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+
+          minutes=${{ parameters.minutes }}
+
+          restorePoint=$(date +%s)
+          restorePoint=$(expr $restorePoint - $(( $minutes * 60 )))
+          restorePoint=$(date -d @$restorePoint +"%Y-%m-%dT%T")
+
+          echo $restorePoint
+
+          az sql db restore \
+            --name ${{ parameters.database }} \
+            --dest-name ${{ parameters.database }}-restore \
+            --resource-group ${{ parameters.tenant }} \
+            --server ${{ parameters.server }} \
+            --service-objective S0 \
+            --time "$restorePoint" \
+            --edition Standard \
+            --no-wait

@@ -1,0 +1,7 @@
+{
+    "CommonConfiguration": "AmongstAllTenants",
+    "AnotherCommonConfiguration": "AmongstAllTenants",
+    "ThisIsALeveledConfiguration": {
+        "LeveledCommonConfiguration":"AValue"
+    }
+}
